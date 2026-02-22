@@ -1,0 +1,74 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.out
+coverage.html
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# Build artifacts
+ssm-proxy
+ssm-proxy-*
+*.tar.gz
+*.zip
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Configuration files (may contain sensitive data)
+config.yaml
+*.local.yaml
+
+# Log files
+*.log
+logs/
+
+# PID files
+*.pid
+
+# Session state files
+.ssm-proxy/
+/var/run/ssm-proxy.pid
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# macOS specific
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Debug files
+debug
+debug.test
+__debug_bin
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Release artifacts
+releases/
