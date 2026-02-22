@@ -29,11 +29,13 @@ A macOS command-line tool that creates **transparent system-level routing** for 
 ## 📋 Requirements
 
 ### Local Machine (macOS)
+
 - macOS 11.0 (Big Sur) or later
 - Root/sudo privileges (for network configuration)
 - AWS credentials configured (`~/.aws/credentials` or environment variables)
 
 ### AWS Infrastructure
+
 - EC2 instance running in your VPC (bastion/jump host)
 - EC2 instance with SSM Agent installed and running
 - EC2 instance with IAM role: `AmazonSSMManagedInstanceCore`
@@ -41,7 +43,9 @@ A macOS command-line tool that creates **transparent system-level routing** for 
 - VPC with SSM endpoints OR NAT Gateway/Internet Gateway
 
 ### AWS Permissions
+
 Your IAM user/role needs:
+
 - `ssm:StartSession`
 - `ssm:TerminateSession`
 - `ec2:DescribeInstances`
@@ -49,6 +53,7 @@ Your IAM user/role needs:
 ## 📦 Installation
 
 ### Homebrew (Coming Soon)
+
 ```bash
 brew install ssm-proxy
 ```
@@ -56,6 +61,7 @@ brew install ssm-proxy
 ### Download Binary
 
 #### macOS (Apple Silicon / M1/M2/M3)
+
 ```bash
 curl -L https://github.com/sbkg0002/ssm-proxy/releases/latest/download/ssm-proxy-darwin-arm64.tar.gz -o ssm-proxy.tar.gz
 tar -xzf ssm-proxy.tar.gz
@@ -64,6 +70,7 @@ sudo mv ssm-proxy-darwin-arm64 /usr/local/bin/ssm-proxy
 ```
 
 #### macOS (Intel)
+
 ```bash
 curl -L https://github.com/sbkg0002/ssm-proxy/releases/latest/download/ssm-proxy-darwin-amd64.tar.gz -o ssm-proxy.tar.gz
 tar -xzf ssm-proxy.tar.gz
@@ -72,6 +79,7 @@ sudo mv ssm-proxy-darwin-amd64 /usr/local/bin/ssm-proxy
 ```
 
 ### Build from Source
+
 ```bash
 git clone https://github.com/sbkg0002/ssm-proxy.git
 cd ssm-proxy
@@ -217,11 +225,11 @@ defaults:
   timeout: 30s
   auto_reconnect: true
   reconnect_delay: 5s
-  max_retries: 0  # 0 = unlimited
+  max_retries: 0 # 0 = unlimited
 
 # Logging
 logging:
-  level: info  # debug, info, warn, error
+  level: info # debug, info, warn, error
   file: ~/.ssm-proxy/logs/ssm-proxy.log
 
 # Named Profiles for Quick Access
@@ -319,12 +327,14 @@ Target Resources (RDS, Redis, etc.)
 ## 🐛 Troubleshooting
 
 ### "Not running as root"
+
 ```bash
 # Solution: Run with sudo
 sudo ssm-proxy start --instance-id i-xxx --cidr 10.0.0.0/8
 ```
 
 ### "SSM Agent not connected"
+
 ```bash
 # Check SSM Agent status on EC2 instance
 sudo systemctl status amazon-ssm-agent
@@ -334,6 +344,7 @@ sudo systemctl status amazon-ssm-agent
 ```
 
 ### "Failed to create utun device"
+
 ```bash
 # Ensure running with sudo
 # Check macOS security settings (System Preferences → Security)
@@ -341,6 +352,7 @@ sudo systemctl status amazon-ssm-agent
 ```
 
 ### "Route already exists"
+
 ```bash
 # Another session may be using same CIDR
 ssm-proxy status
@@ -353,11 +365,13 @@ sudo ssm-proxy stop --all
 ```
 
 ### Enable Debug Logging
+
 ```bash
 sudo ssm-proxy start --debug --instance-id i-xxx --cidr 10.0.0.0/8
 ```
 
 ### Check Routes
+
 ```bash
 # View routing table
 netstat -rn | grep utun
@@ -369,6 +383,7 @@ route get 10.0.1.5
 ## 📝 Examples
 
 ### Database Access
+
 ```bash
 sudo ssm-proxy start --instance-id i-xxx --cidr 10.0.0.0/16
 
@@ -380,6 +395,7 @@ mysql -h mydb.abc.us-east-1.rds.amazonaws.com -P 3306 -u admin -p
 ```
 
 ### Redis/ElastiCache
+
 ```bash
 sudo ssm-proxy start --instance-id i-xxx --cidr 10.0.0.0/8
 
@@ -387,6 +403,7 @@ redis-cli -h master.abc.cache.amazonaws.com -p 6379
 ```
 
 ### Multiple Services
+
 ```bash
 # Route entire VPC CIDR
 sudo ssm-proxy start --instance-id i-xxx --cidr 10.0.0.0/8
@@ -399,6 +416,7 @@ ssh ec2-user@10.0.4.50
 ```
 
 ### Development Workflow
+
 ```bash
 # Morning: Start proxy as daemon
 sudo ssm-proxy start \
@@ -445,4 +463,4 @@ Give a ⭐️ if this project helped you!
 
 ---
 
-**Note:** This tool is currently in active development. The SSM WebSocket implementation is a placeholder and needs to be completed for production use. Contributions are welcome!
+**Note:** This tool includes a complete WebSocket implementation for AWS SSM Session Manager with SigV4 authentication. The core functionality is ready for testing. An EC2 companion agent/script may be needed on the bastion host for full packet forwarding capabilities. Contributions are welcome!

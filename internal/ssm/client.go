@@ -2,14 +2,43 @@ package ssm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/gorilla/websocket"
 	awsclient "github.com/sbkg0002/ssm-proxy/internal/aws"
+	"github.com/sirupsen/logrus"
+)
+
+var log = logrus.New()
+
+// Session Manager protocol constants
+const (
+	MessageSchemaVersion = "1.0"
+
+	// Message types
+	MessageTypeInputStreamData   = "input_stream_data"
+	MessageTypeOutputStreamData  = "output_stream_data"
+	MessageTypeAgentSessionState = "agent_session_state"
+	MessageTypeChannelClosed     = "channel_closed"
+	MessageTypeAcknowledge       = "acknowledge"
+
+	// Session states
+	SessionStateConnected   = "Connected"
+	SessionStateTerminating = "Terminating"
+	SessionStateTerminated  = "Terminated"
 )
 
 // Client represents an SSM client for managing sessions
@@ -17,19 +46,39 @@ type Client struct {
 	awsClient  *awsclient.Client
 	ssmClient  *ssm.Client
 	instanceID string
+	region     string
 }
 
-// Session represents an active SSM session
+// Session represents an active SSM session with WebSocket connection
 type Session struct {
-	sessionID  string
-	instanceID string
-	client     *Client
-	reader     io.Reader
-	writer     io.Writer
-	closed     bool
-	mu         sync.Mutex
-	startTime  time.Time
-	lastActive time.Time
+	sessionID   string
+	instanceID  string
+	tokenValue  string
+	streamURL   string
+	client      *Client
+	conn        *websocket.Conn
+	closed      atomic.Bool
+	startTime   time.Time
+	lastActive  time.Time
+	sequenceNum atomic.Int64
+	readChan    chan []byte
+	writeChan   chan []byte
+	errorChan   chan error
+	closeChan   chan struct{}
+	mu          sync.RWMutex
+}
+
+// SessionMessage represents a Session Manager protocol message
+type SessionMessage struct {
+	MessageSchemaVersion string                 `json:"MessageSchemaVersion"`
+	MessageType          string                 `json:"MessageType"`
+	MessageId            string                 `json:"MessageId,omitempty"`
+	SequenceNumber       int64                  `json:"SequenceNumber"`
+	Flags                int64                  `json:"Flags"`
+	Payload              string                 `json:"Payload,omitempty"`
+	PayloadType          int                    `json:"PayloadType,omitempty"`
+	CreatedDate          string                 `json:"CreatedDate,omitempty"`
+	Content              map[string]interface{} `json:"Content,omitempty"`
 }
 
 // NewClient creates a new SSM client for the specified instance
@@ -38,17 +87,18 @@ func NewClient(ctx context.Context, awsClient *awsclient.Client, instanceID stri
 		awsClient:  awsClient,
 		ssmClient:  awsClient.SSMClient(),
 		instanceID: instanceID,
+		region:     awsClient.Region(),
 	}, nil
 }
 
-// StartSession starts a new SSM session to the instance
+// StartSession starts a new SSM session and establishes WebSocket connection
 func (c *Client) StartSession(ctx context.Context, name string) (*Session, error) {
-	// Start SSM session using AWS-StartInteractiveCommand document
+	// Start SSM session using AWS-StartInteractiveCommand
 	input := &ssm.StartSessionInput{
 		Target:       aws.String(c.instanceID),
 		DocumentName: aws.String("AWS-StartInteractiveCommand"),
 		Parameters: map[string][]string{
-			"command": {"sh"}, // Start a shell for packet forwarding
+			"command": {"bash"}, // Start bash for packet forwarding
 		},
 	}
 
@@ -62,69 +112,262 @@ func (c *Client) StartSession(ctx context.Context, name string) (*Session, error
 		return nil, fmt.Errorf("received empty session ID from SSM")
 	}
 
+	tokenValue := aws.ToString(result.TokenValue)
+	streamURL := aws.ToString(result.StreamUrl)
+
+	if streamURL == "" {
+		streamURL = fmt.Sprintf("wss://ssmmessages.%s.amazonaws.com/v1/data-channel/%s?role=publish_subscribe",
+			c.region, sessionID)
+	}
+
+	log.WithFields(logrus.Fields{
+		"session_id": sessionID,
+		"stream_url": streamURL,
+	}).Debug("SSM session started")
+
 	// Create session object
 	session := &Session{
 		sessionID:  sessionID,
 		instanceID: c.instanceID,
+		tokenValue: tokenValue,
+		streamURL:  streamURL,
 		client:     c,
-		closed:     false,
 		startTime:  time.Now(),
 		lastActive: time.Now(),
+		readChan:   make(chan []byte, 100),
+		writeChan:  make(chan []byte, 100),
+		errorChan:  make(chan error, 10),
+		closeChan:  make(chan struct{}),
 	}
 
-	// TODO: Establish WebSocket connection to SSM service
-	// This is a placeholder - real implementation would:
-	// 1. Connect to wss://ssmmessages.{region}.amazonaws.com/v1/data-channel/{sessionId}
-	// 2. Authenticate with AWS SigV4
-	// 3. Open bidirectional WebSocket for data transfer
+	// Establish WebSocket connection with SigV4 authentication
+	if err := session.connect(ctx); err != nil {
+		return nil, fmt.Errorf("failed to connect WebSocket: %w", err)
+	}
 
-	// For now, create placeholder reader/writer
-	session.reader = &placeholderReader{}
-	session.writer = &placeholderWriter{}
+	// Start message processing goroutines
+	go session.readLoop()
+	go session.writeLoop()
+
+	log.Info("SSM session WebSocket connected successfully")
 
 	return session, nil
 }
 
-// SessionID returns the SSM session ID
-func (s *Session) SessionID() string {
-	return s.sessionID
+// connect establishes WebSocket connection with AWS SigV4 authentication
+func (s *Session) connect(ctx context.Context) error {
+	// Parse the stream URL
+	streamURL, err := url.Parse(s.streamURL)
+	if err != nil {
+		return fmt.Errorf("invalid stream URL: %w", err)
+	}
+
+	// Create HTTP request for WebSocket upgrade
+	req := &http.Request{
+		Method: "GET",
+		URL:    streamURL,
+		Header: make(http.Header),
+	}
+
+	// Get AWS credentials
+	creds, err := s.client.awsClient.Config().Credentials.Retrieve(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to retrieve AWS credentials: %w", err)
+	}
+
+	// Sign the request with AWS SigV4
+	signer := v4.NewSigner()
+	payloadHash := sha256.Sum256([]byte{})
+
+	err = signer.SignHTTP(ctx, creds, req, hex.EncodeToString(payloadHash[:]),
+		"ssmmessages", s.client.region, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to sign request: %w", err)
+	}
+
+	// Create WebSocket dialer
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 45 * time.Second,
+	}
+
+	// Connect WebSocket
+	conn, resp, err := dialer.DialContext(ctx, s.streamURL, req.Header)
+	if err != nil {
+		if resp != nil {
+			body, _ := io.ReadAll(resp.Body)
+			log.Errorf("WebSocket dial failed: status=%d, body=%s", resp.StatusCode, string(body))
+		}
+		return fmt.Errorf("failed to dial WebSocket: %w", err)
+	}
+
+	s.conn = conn
+	log.Debug("WebSocket connection established")
+
+	return nil
 }
 
-// InstanceID returns the EC2 instance ID
-func (s *Session) InstanceID() string {
-	return s.instanceID
+// readLoop continuously reads messages from WebSocket
+func (s *Session) readLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("Panic in readLoop: %v", r)
+		}
+	}()
+
+	for {
+		select {
+		case <-s.closeChan:
+			return
+		default:
+		}
+
+		if s.closed.Load() {
+			return
+		}
+
+		// Read message from WebSocket
+		_, message, err := s.conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+				log.Errorf("WebSocket read error: %v", err)
+				s.errorChan <- err
+			}
+			return
+		}
+
+		// Parse Session Manager message
+		var msg SessionMessage
+		if err := json.Unmarshal(message, &msg); err != nil {
+			log.Errorf("Failed to parse message: %v", err)
+			continue
+		}
+
+		s.lastActive = time.Now()
+
+		// Handle different message types
+		switch msg.MessageType {
+		case MessageTypeOutputStreamData:
+			// Decode payload and send to read channel
+			if msg.Payload != "" {
+				data, err := base64.StdEncoding.DecodeString(msg.Payload)
+				if err != nil {
+					log.Errorf("Failed to decode payload: %v", err)
+					continue
+				}
+
+				select {
+				case s.readChan <- data:
+				case <-s.closeChan:
+					return
+				}
+			}
+
+		case MessageTypeAgentSessionState:
+			// Log session state changes
+			if content, ok := msg.Content["SessionState"].(string); ok {
+				log.Debugf("Session state: %s", content)
+				if content == SessionStateTerminated || content == SessionStateTerminating {
+					return
+				}
+			}
+
+		case MessageTypeChannelClosed:
+			log.Info("Channel closed by remote")
+			return
+
+		case MessageTypeAcknowledge:
+			// Acknowledgment received, no action needed
+			log.Debugf("Received acknowledge for sequence %d", msg.SequenceNumber)
+
+		default:
+			log.Debugf("Unhandled message type: %s", msg.MessageType)
+		}
+	}
+}
+
+// writeLoop continuously writes messages to WebSocket
+func (s *Session) writeLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Errorf("Panic in writeLoop: %v", r)
+		}
+	}()
+
+	for {
+		select {
+		case <-s.closeChan:
+			return
+		case data := <-s.writeChan:
+			if s.closed.Load() {
+				return
+			}
+
+			// Create Session Manager message
+			msg := SessionMessage{
+				MessageSchemaVersion: MessageSchemaVersion,
+				MessageType:          MessageTypeInputStreamData,
+				SequenceNumber:       s.sequenceNum.Add(1),
+				Flags:                0,
+				Payload:              base64.StdEncoding.EncodeToString(data),
+			}
+
+			// Marshal to JSON
+			jsonData, err := json.Marshal(msg)
+			if err != nil {
+				log.Errorf("Failed to marshal message: %v", err)
+				continue
+			}
+
+			// Write to WebSocket
+			if err := s.conn.WriteMessage(websocket.TextMessage, jsonData); err != nil {
+				log.Errorf("WebSocket write error: %v", err)
+				s.errorChan <- err
+				return
+			}
+
+			s.lastActive = time.Now()
+		}
+	}
 }
 
 // Read reads data from the SSM session
 func (s *Session) Read(p []byte) (int, error) {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
+	if s.closed.Load() {
 		return 0, io.EOF
 	}
-	s.mu.Unlock()
 
-	n, err := s.reader.Read(p)
-	if err == nil {
-		s.lastActive = time.Now()
+	select {
+	case data := <-s.readChan:
+		n := copy(p, data)
+		return n, nil
+	case err := <-s.errorChan:
+		return 0, err
+	case <-s.closeChan:
+		return 0, io.EOF
+	case <-time.After(100 * time.Millisecond):
+		// Timeout to prevent blocking indefinitely
+		return 0, nil
 	}
-	return n, err
 }
 
 // Write writes data to the SSM session
 func (s *Session) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
+	if s.closed.Load() {
 		return 0, fmt.Errorf("session is closed")
 	}
-	s.mu.Unlock()
 
-	n, err := s.writer.Write(p)
-	if err == nil {
-		s.lastActive = time.Now()
+	// Make a copy of the data
+	data := make([]byte, len(p))
+	copy(data, p)
+
+	select {
+	case s.writeChan <- data:
+		return len(p), nil
+	case <-s.closeChan:
+		return 0, fmt.Errorf("session is closed")
+	case <-time.After(5 * time.Second):
+		return 0, fmt.Errorf("write timeout")
 	}
-	return n, err
 }
 
 // Reader returns the session's reader
@@ -137,14 +380,24 @@ func (s *Session) Writer() io.Writer {
 	return s
 }
 
+// SessionID returns the SSM session ID
+func (s *Session) SessionID() string {
+	return s.sessionID
+}
+
+// InstanceID returns the EC2 instance ID
+func (s *Session) InstanceID() string {
+	return s.instanceID
+}
+
 // IsHealthy checks if the session is still healthy
 func (s *Session) IsHealthy() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
+	if s.closed.Load() {
 		return false
 	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	// Check if session has been active recently (within 2 minutes)
 	return time.Since(s.lastActive) < 2*time.Minute
@@ -152,14 +405,26 @@ func (s *Session) IsHealthy() bool {
 
 // Close closes the SSM session
 func (s *Session) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return nil
+	if s.closed.Swap(true) {
+		return nil // Already closed
 	}
 
-	s.closed = true
+	log.Info("Closing SSM session")
+
+	// Signal close to goroutines
+	close(s.closeChan)
+
+	// Close WebSocket connection
+	if s.conn != nil {
+		// Send close message
+		err := s.conn.WriteMessage(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+		if err != nil {
+			log.Warnf("Failed to send close message: %v", err)
+		}
+
+		s.conn.Close()
+	}
 
 	// Terminate the SSM session
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -171,9 +436,10 @@ func (s *Session) Close() error {
 
 	_, err := s.client.ssmClient.TerminateSession(ctx, input)
 	if err != nil {
-		return fmt.Errorf("failed to terminate SSM session: %w", err)
+		log.Warnf("Failed to terminate SSM session: %v", err)
 	}
 
+	log.Info("SSM session closed")
 	return nil
 }
 
@@ -184,29 +450,9 @@ func (s *Session) Uptime() time.Duration {
 
 // LastActive returns when the session was last active
 func (s *Session) LastActive() time.Time {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.lastActive
-}
-
-// placeholderReader is a placeholder for actual SSM WebSocket reader
-// TODO: Replace with real implementation that reads from SSM WebSocket
-type placeholderReader struct{}
-
-func (r *placeholderReader) Read(p []byte) (int, error) {
-	// Block indefinitely - real implementation would read from WebSocket
-	time.Sleep(100 * time.Millisecond)
-	return 0, io.EOF
-}
-
-// placeholderWriter is a placeholder for actual SSM WebSocket writer
-// TODO: Replace with real implementation that writes to SSM WebSocket
-type placeholderWriter struct{}
-
-func (w *placeholderWriter) Write(p []byte) (int, error) {
-	// Real implementation would write to WebSocket
-	// For now, just pretend we wrote the data
-	return len(p), nil
 }
 
 // EncapsulatePacket wraps an IP packet with protocol framing for transmission

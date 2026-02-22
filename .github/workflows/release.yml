@@ -3,7 +3,7 @@ name: Build and Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
     branches:
       - main
   pull_request:
@@ -27,7 +27,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version: "1.21"
           cache: true
 
       - name: Download dependencies
@@ -67,7 +67,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version: "1.21"
           cache: true
 
       - name: Get version
@@ -81,6 +81,20 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
 
+      - name: Verify project structure
+        run: |
+          echo "Current directory:"
+          pwd
+          echo ""
+          echo "Directory structure:"
+          ls -la
+          echo ""
+          echo "Checking for cmd/ssm-proxy:"
+          ls -la cmd/ || echo "cmd directory not found"
+          echo ""
+          echo "Go module info:"
+          cat go.mod | head -5
+
       - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
@@ -88,8 +102,23 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           CGO_ENABLED: 0
         run: |
+          set -e
+
+          # Verify project structure
+          if [ ! -d "cmd/ssm-proxy" ]; then
+            echo "Error: cmd/ssm-proxy directory not found"
+            echo "Current directory: $(pwd)"
+            echo "Contents:"
+            ls -la
+            exit 1
+          fi
+
           COMMIT=$(git rev-parse --short HEAD)
           BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+          echo "Building ssm-proxy ${VERSION} for ${GOOS}/${GOARCH}..."
+          echo "Commit: ${COMMIT}"
+          echo "Build time: ${BUILD_TIME}"
 
           mkdir -p dist
 
@@ -99,6 +128,13 @@ jobs:
             -o "dist/ssm-proxy-${GOOS}-${GOARCH}" \
             ./cmd/ssm-proxy
 
+          if [ ! -f "dist/ssm-proxy-${GOOS}-${GOARCH}" ]; then
+            echo "Error: Binary was not created"
+            exit 1
+          fi
+
+          echo "✓ Binary built successfully"
+
           # Create tarball
           cd dist
           tar -czf "ssm-proxy-${VERSION}-${GOOS}-${GOARCH}.tar.gz" "ssm-proxy-${GOOS}-${GOARCH}"
@@ -106,6 +142,7 @@ jobs:
           # Create checksum
           shasum -a 256 "ssm-proxy-${VERSION}-${GOOS}-${GOARCH}.tar.gz" > "ssm-proxy-${VERSION}-${GOOS}-${GOARCH}.tar.gz.sha256"
 
+          echo "✓ Tarball and checksum created"
           ls -lh
 
       - name: Upload artifacts

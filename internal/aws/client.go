@@ -235,6 +235,7 @@ func (c *Client) convertEC2Instance(ec2Instance ec2types.Instance) *Instance {
 }
 
 // Config returns the underlying AWS config
+// This is used by SSM client for SigV4 signing of WebSocket connections
 func (c *Client) Config() aws.Config {
 	return c.cfg
 }
