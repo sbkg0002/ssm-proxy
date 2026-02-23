@@ -13,7 +13,6 @@ import (
 	"github.com/sbkg0002/ssm-proxy/internal/forwarder"
 	"github.com/sbkg0002/ssm-proxy/internal/routing"
 	"github.com/sbkg0002/ssm-proxy/internal/session"
-	"github.com/sbkg0002/ssm-proxy/internal/ssm"
 	"github.com/sbkg0002/ssm-proxy/internal/tunnel"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -210,20 +209,25 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("  └─ SSM Status: connected ✓\n")
 
-	// Step 3: Start SSM session
-	fmt.Println("✓ Starting SSM session...")
-	ssmClient, err := ssm.NewClient(ctx, awsClient, instance.InstanceID)
-	if err != nil {
-		return fmt.Errorf("failed to create SSM client: %w", err)
-	}
+	// Step 3: Start SSH tunnel with dynamic SOCKS5 forwarding over SSM
+	fmt.Println("✓ Starting SSH tunnel over SSM...")
+	sshTunnel := tunnel.NewSSHTunnel(tunnel.SSHTunnelConfig{
+		InstanceID:       instance.InstanceID,
+		Region:           awsClient.Region(),
+		AWSProfile:       awsProfile,
+		AWSConfig:        awsClient.Config(),
+		AvailabilityZone: instance.AvailabilityZone,
+		SOCKSPort:        1080,
+		SSHUser:          "ec2-user",
+	})
 
-	ssmSession, err := ssmClient.StartSession(ctx, sessionName)
-	if err != nil {
-		return fmt.Errorf("failed to start SSM session: %w", err)
+	if err := sshTunnel.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start SSH tunnel: %w", err)
 	}
-	defer ssmSession.Close()
+	defer sshTunnel.Stop()
 
-	fmt.Printf("  └─ Session ID: %s\n", ssmSession.SessionID())
+	fmt.Printf("  ├─ SOCKS5 proxy: %s\n", sshTunnel.SOCKSAddr())
+	fmt.Printf("  └─ Tunnel established ✓\n")
 
 	// Step 4: Create TUN device
 	fmt.Println("✓ Creating utun device...")
@@ -260,21 +264,27 @@ func runStart(cmd *cobra.Command, args []string) error {
 		router.Cleanup()
 	}()
 
-	// Step 6: Start packet forwarder
-	fmt.Println("✓ Starting packet forwarder...")
+	// Step 6: Start TUN-to-SOCKS translator
+	fmt.Println("✓ Starting transparent packet forwarder...")
 
-	fwd := forwarder.New(tun, ssmSession, logPackets)
-	if err := fwd.Start(); err != nil {
-		return fmt.Errorf("failed to start forwarder: %w", err)
+	tunToSocks, err := forwarder.NewTunToSOCKS(tun, sshTunnel.SOCKSAddr())
+	if err != nil {
+		return fmt.Errorf("failed to create TUN-to-SOCKS translator: %w", err)
 	}
-	defer fwd.Stop()
+
+	if err := tunToSocks.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start TUN-to-SOCKS translator: %w", err)
+	}
+	defer tunToSocks.Stop()
+
+	fmt.Printf("  └─ Transparent forwarding active ✓\n")
 
 	// Step 7: Save session state
 	sessionMgr := session.NewManager()
 	sess := &session.Session{
 		Name:       sessionName,
 		InstanceID: instance.InstanceID,
-		SessionID:  ssmSession.SessionID(),
+		SessionID:  sessionName, // Use session name as ID for SSH tunnel
 		TunDevice:  tun.Name(),
 		TunIP:      localIP,
 		CIDRBlocks: cidrBlocks,
@@ -293,9 +303,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
-	// Monitor session health if auto-reconnect is enabled
+	// Monitor SSH tunnel health if auto-reconnect is enabled
 	if autoReconnect {
-		go monitorSessionHealth(ctx, ssmSession, &reconnectDelay, maxRetries)
+		go monitorTunnelHealth(ctx, sshTunnel, &reconnectDelay, maxRetries)
 	}
 
 	// Wait for signal
@@ -345,7 +355,7 @@ func printSuccessBanner(tunDevice string, cidrs []string) {
 	fmt.Println()
 }
 
-func monitorSessionHealth(ctx context.Context, session *ssm.Session, delay *time.Duration, maxRetries int) {
+func monitorTunnelHealth(ctx context.Context, sshTunnel *tunnel.SSHTunnel, delay *time.Duration, maxRetries int) {
 	retries := 0
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -363,23 +373,30 @@ func monitorSessionHealth(ctx context.Context, session *ssm.Session, delay *time
 			default:
 			}
 
-			if !session.IsHealthy() {
+			if !sshTunnel.IsRunning() {
 				// Check if we're shutting down
 				select {
 				case <-ctx.Done():
-					log.Debug("Session unhealthy but context cancelled, not reconnecting")
+					log.Debug("SSH tunnel down but context cancelled, not reconnecting")
 					return
 				default:
 				}
 
-				log.Warn("Session unhealthy, attempting reconnection...")
+				log.Warn("SSH tunnel down, attempting reconnection...")
 				if maxRetries > 0 && retries >= maxRetries {
 					log.Error("Max reconnection attempts reached, giving up")
 					return
 				}
 				retries++
 				time.Sleep(*delay)
-				// Reconnection logic would go here
+
+				// Attempt to restart tunnel
+				if err := sshTunnel.Start(ctx); err != nil {
+					log.Errorf("Failed to restart SSH tunnel: %v", err)
+				} else {
+					log.Info("SSH tunnel reconnected successfully")
+					retries = 0
+				}
 			} else {
 				retries = 0 // Reset retry counter on successful health check
 			}

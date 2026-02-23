@@ -6,6 +6,8 @@
 
 A macOS command-line tool that creates **transparent system-level routing** for specified CIDR blocks through an AWS EC2 instance via SSM Session Manager. Applications require **zero configuration** - traffic is automatically routed based on destination IP address.
 
+**Architecture:** Uses TUN device + SSH tunnel over SSM + internal SOCKS5 proxy (invisible to apps). See [Architecture Guide](TRANSPARENT_PROXY_ARCHITECTURE.md) for details.
+
 ## 🚀 Features
 
 - ✅ **Zero Application Configuration** - Works transparently with all applications
@@ -49,6 +51,12 @@ Your IAM user/role needs:
 - `ssm:StartSession`
 - `ssm:TerminateSession`
 - `ec2:DescribeInstances`
+
+## 📚 Documentation
+
+- **[Quick Start Guide](TRANSPARENT_PROXY_QUICKSTART.md)** - Get started in 5 minutes
+- **[Architecture Guide](TRANSPARENT_PROXY_ARCHITECTURE.md)** - How transparent proxy works
+- **[Specification](SPECIFICATION.md)** - Complete feature specification
 
 ## 📦 Installation
 
@@ -315,14 +323,20 @@ macOS Routing Table (10.0.0.0/8 → utun2)
         ↓
 utun2 (virtual network interface)
         ↓
-ssm-proxy CLI (packet forwarding)
-        ↓ (encrypted SSM tunnel)
+TUN-to-SOCKS Translator (user-space TCP/IP stack)
+        ↓ (internal SOCKS5 - apps don't see this!)
+SSH Tunnel (-D dynamic forwarding)
+        ↓ (encrypted over SSM WebSocket)
 AWS SSM Session Manager
         ↓
-EC2 Instance (IP forwarding enabled)
+EC2 Instance (bastion with IP forwarding)
         ↓
 Target Resources (RDS, Redis, etc.)
 ```
+
+**Key Innovation:** Applications connect normally to private IPs. The TUN device captures packets, translates them to SOCKS5 connections internally (invisible to apps), and forwards through an SSH tunnel over SSM.
+
+📖 **Read the [detailed architecture guide](TRANSPARENT_PROXY_ARCHITECTURE.md)** to understand how this achieves true transparency.
 
 ## 🐛 Troubleshooting
 
@@ -453,7 +467,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🔗 Links
 
-- [Documentation](SPECIFICATION.md)
+- [Quick Start Guide](TRANSPARENT_PROXY_QUICKSTART.md)
+- [Architecture Guide](TRANSPARENT_PROXY_ARCHITECTURE.md)
+- [Full Documentation](SPECIFICATION.md)
 - [Issue Tracker](https://github.com/sbkg0002/ssm-proxy/issues)
 - [Releases](https://github.com/sbkg0002/ssm-proxy/releases)
 
@@ -463,4 +479,4 @@ Give a ⭐️ if this project helped you!
 
 ---
 
-**Note:** This tool includes a complete WebSocket implementation for AWS SSM Session Manager with SigV4 authentication. The core functionality is ready for testing. An EC2 companion agent/script may be needed on the bastion host for full packet forwarding capabilities. Contributions are welcome!
+**How It Works:** This tool creates a TUN device for packet capture, establishes an SSH tunnel with dynamic SOCKS5 forwarding over SSM, and translates TUN packets to SOCKS5 connections in user-space. The result is truly transparent networking where applications require zero configuration. See the [Architecture Guide](TRANSPARENT_PROXY_ARCHITECTURE.md) for a deep dive.
