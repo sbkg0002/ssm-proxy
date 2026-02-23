@@ -145,6 +145,12 @@ func (c *Client) StartSession(ctx context.Context, name string) (*Session, error
 		return nil, fmt.Errorf("failed to connect WebSocket: %w", err)
 	}
 
+	// Send opening handshake with token
+	if err := session.sendOpeningHandshake(); err != nil {
+		session.Close()
+		return nil, fmt.Errorf("failed to send opening handshake: %w", err)
+	}
+
 	// Start message processing goroutines
 	go session.readLoop()
 	go session.writeLoop()
@@ -206,6 +212,48 @@ func (s *Session) connect(ctx context.Context) error {
 	return nil
 }
 
+// sendOpeningHandshake sends the initial handshake message with the token
+// AWS Session Manager requires an opening handshake to establish the data channel
+func (s *Session) sendOpeningHandshake() error {
+	log.WithFields(logrus.Fields{
+		"session_id": s.sessionID,
+		"has_token":  s.tokenValue != "",
+	}).Debug("Sending opening handshake")
+
+	// AWS Session Manager protocol expects the token in a channel_open request
+	// The token must be in the Content field for the data channel to be established
+	handshake := SessionMessage{
+		MessageSchemaVersion: MessageSchemaVersion,
+		MessageType:          "input_stream_data",
+		SequenceNumber:       0,
+		Flags:                3, // SYN flag to open channel
+		Content: map[string]interface{}{
+			"TokenValue": s.tokenValue,
+		},
+	}
+
+	// Marshal to JSON
+	jsonData, err := json.Marshal(handshake)
+	if err != nil {
+		return fmt.Errorf("failed to marshal handshake: %w", err)
+	}
+
+	log.Debugf("Sending handshake message with token in Content field")
+
+	// Send handshake message
+	if err := s.conn.WriteMessage(websocket.TextMessage, jsonData); err != nil {
+		return fmt.Errorf("failed to send handshake: %w", err)
+	}
+
+	log.Debug("Opening handshake sent, waiting for acknowledgment...")
+
+	// Wait a bit for the handshake to be processed
+	// The server should respond with an acknowledgment
+	time.Sleep(200 * time.Millisecond)
+
+	return nil
+}
+
 // readLoop continuously reads messages from WebSocket
 func (s *Session) readLoop() {
 	defer func() {
@@ -255,10 +303,15 @@ func (s *Session) readLoop() {
 					continue
 				}
 
-				select {
-				case s.readChan <- data:
-				case <-s.closeChan:
-					return
+				// Skip empty packets
+				if len(data) > 0 {
+					select {
+					case s.readChan <- data:
+					case <-s.closeChan:
+						return
+					default:
+						log.Warn("Read channel full, dropping packet")
+					}
 				}
 			}
 
@@ -276,8 +329,12 @@ func (s *Session) readLoop() {
 			return
 
 		case MessageTypeAcknowledge:
-			// Acknowledgment received, no action needed
+			// Acknowledgment received
 			log.Debugf("Received acknowledge for sequence %d", msg.SequenceNumber)
+			// Check if this is the handshake acknowledgment (sequence 0)
+			if msg.SequenceNumber == 0 {
+				log.Info("Handshake acknowledged by server")
+			}
 
 		default:
 			log.Debugf("Unhandled message type: %s", msg.MessageType)
@@ -303,13 +360,17 @@ func (s *Session) writeLoop() {
 			}
 
 			// Create Session Manager message
+			seqNum := s.sequenceNum.Add(1)
 			msg := SessionMessage{
 				MessageSchemaVersion: MessageSchemaVersion,
 				MessageType:          MessageTypeInputStreamData,
-				SequenceNumber:       s.sequenceNum.Add(1),
+				SequenceNumber:       seqNum,
 				Flags:                0,
 				Payload:              base64.StdEncoding.EncodeToString(data),
+				PayloadType:          1,
 			}
+
+			log.Debugf("Sending packet: seq=%d, size=%d bytes", seqNum, len(data))
 
 			// Marshal to JSON
 			jsonData, err := json.Marshal(msg)
