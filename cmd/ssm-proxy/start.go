@@ -235,7 +235,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create TUN device: %w", err)
 	}
-	defer tun.Close()
+	// TUN will be closed during shutdown sequence (must be closed before stopping forwarder)
 
 	// Configure TUN device
 	if err := tun.Configure(localIP, mtu); err != nil {
@@ -275,7 +275,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if err := tunToSocks.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start TUN-to-SOCKS translator: %w", err)
 	}
-	defer tunToSocks.Stop()
+	// Forwarder will be stopped during shutdown sequence (after closing TUN device)
 
 	fmt.Printf("  └─ Transparent forwarding active ✓\n")
 
@@ -314,6 +314,19 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Cancel context to stop health monitor and other goroutines
 	cancel()
+
+	// Shutdown sequence: Close TUN device BEFORE stopping forwarder
+	// This ensures any blocked Read() operations are interrupted
+	fmt.Println("✓ Closing utun device...")
+	if err := tun.Close(); err != nil {
+		log.Warnf("Error closing TUN device: %v", err)
+	}
+
+	// Now stop the forwarder (Read() will return error and goroutine will exit)
+	fmt.Println("✓ Stopping packet forwarder...")
+	if err := tunToSocks.Stop(); err != nil {
+		log.Warnf("Error stopping forwarder: %v", err)
+	}
 
 	return nil
 }

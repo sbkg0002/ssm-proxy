@@ -104,8 +104,20 @@ func (t *TunToSOCKS) Stop() error {
 	t.connections = make(map[connKey]*tcpConn)
 	t.connMu.Unlock()
 
-	t.wg.Wait()
-	log.Info("TUN-to-SOCKS translator stopped")
+	// Wait for goroutines to finish with timeout
+	done := make(chan struct{})
+	go func() {
+		t.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Info("TUN-to-SOCKS translator stopped cleanly")
+	case <-time.After(5 * time.Second):
+		log.Warn("Timeout waiting for TUN-to-SOCKS translator to stop")
+	}
+
 	return nil
 }
 
@@ -117,18 +129,27 @@ func (t *TunToSOCKS) readPackets(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			log.Debug("readPackets: context cancelled, exiting")
 			return
 		case <-t.stopCh:
+			log.Debug("readPackets: stop signal received, exiting")
 			return
 		default:
 		}
 
 		n, err := t.tun.Read(buf)
 		if err != nil {
+			// Check if we're stopping (TUN device closed during shutdown)
 			select {
 			case <-t.stopCh:
+				log.Debug("readPackets: stop signal received after read error, exiting")
+				return
+			case <-ctx.Done():
+				log.Debug("readPackets: context cancelled after read error, exiting")
 				return
 			default:
+				// Transient error, retry after short delay
+				log.Debugf("readPackets: read error (will retry): %v", err)
 				time.Sleep(10 * time.Millisecond)
 				continue
 			}
@@ -304,6 +325,7 @@ func (t *TunToSOCKS) readFromSOCKS(conn *tcpConn) {
 	for {
 		select {
 		case <-t.stopCh:
+			log.Debug("readFromSOCKS: stop signal received, closing connection")
 			return
 		default:
 		}
@@ -360,8 +382,10 @@ func (t *TunToSOCKS) cleanupConnections(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			log.Debug("cleanupConnections: context cancelled, exiting")
 			return
 		case <-t.stopCh:
+			log.Debug("cleanupConnections: stop signal received, exiting")
 			return
 		case <-ticker.C:
 			t.cleanup()
