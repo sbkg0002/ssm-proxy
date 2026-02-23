@@ -302,6 +302,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	<-sigCh
 	fmt.Println("\n\n✓ Shutting down gracefully...")
 
+	// Cancel context to stop health monitor and other goroutines
+	cancel()
+
 	return nil
 }
 
@@ -350,9 +353,25 @@ func monitorSessionHealth(ctx context.Context, session *ssm.Session, delay *time
 	for {
 		select {
 		case <-ctx.Done():
+			log.Debug("Health monitor stopping due to context cancellation")
 			return
 		case <-ticker.C:
+			// Check context again before attempting reconnect
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			if !session.IsHealthy() {
+				// Check if we're shutting down
+				select {
+				case <-ctx.Done():
+					log.Debug("Session unhealthy but context cancelled, not reconnecting")
+					return
+				default:
+				}
+
 				log.Warn("Session unhealthy, attempting reconnection...")
 				if maxRetries > 0 && retries >= maxRetries {
 					log.Error("Max reconnection attempts reached, giving up")
