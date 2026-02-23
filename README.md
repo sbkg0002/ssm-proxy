@@ -60,30 +60,11 @@ Your IAM user/role needs:
 
 ## 📦 Installation
 
-### Homebrew (Coming Soon)
+### macOS (Apple Silicon / M1/M2/M3)
 
 ```bash
-brew install ssm-proxy
-```
-
-### Download Binary
-
-#### macOS (Apple Silicon / M1/M2/M3)
-
-```bash
-curl -L https://github.com/sbkg0002/ssm-proxy/releases/latest/download/ssm-proxy-darwin-arm64.tar.gz -o ssm-proxy.tar.gz
-tar -xzf ssm-proxy.tar.gz
-chmod +x ssm-proxy-darwin-arm64
-sudo mv ssm-proxy-darwin-arm64 /usr/local/bin/ssm-proxy
-```
-
-#### macOS (Intel)
-
-```bash
-curl -L https://github.com/sbkg0002/ssm-proxy/releases/latest/download/ssm-proxy-darwin-amd64.tar.gz -o ssm-proxy.tar.gz
-tar -xzf ssm-proxy.tar.gz
-chmod +x ssm-proxy-darwin-amd64
-sudo mv ssm-proxy-darwin-amd64 /usr/local/bin/ssm-proxy
+# Install mise https://mise.jdx.dev/
+mise use --global github:sbkg0002/ssm-proxy
 ```
 
 ### Build from Source
@@ -101,7 +82,7 @@ sudo make install
 
 ```bash
 # Route 10.0.0.0/8 through EC2 instance
-sudo ssm-proxy start \
+sudo -E ssm-proxy start \
   --instance-id i-1234567890abcdef0 \
   --cidr 10.0.0.0/8
 ```
@@ -110,22 +91,13 @@ sudo ssm-proxy start \
 
 ```bash
 # Database - NO PROXY CONFIGURATION NEEDED!
-psql -h 10.0.1.5 -p 5432 mydb
-
-# API
-curl http://10.0.2.100:8080/health
-
-# Redis
-redis-cli -h 10.0.3.25 -p 6379
-
-# Any application
-mysql -h 10.0.4.50 -u admin -p
+e.g. psql -h 10.0.1.5 -p 5432 mydb
 ```
 
 ### 3. Stop the Proxy
 
 ```bash
-sudo ssm-proxy stop
+sudo -E ssm-proxy stop
 ```
 
 ## 📖 Usage
@@ -134,28 +106,28 @@ sudo ssm-proxy stop
 
 ```bash
 # Basic usage
-sudo ssm-proxy start --instance-id i-xxx --cidr 10.0.0.0/8
+sudo -E ssm-proxy start --instance-id i-xxx --cidr 10.0.0.0/8
 
 # Multiple CIDR blocks
-sudo ssm-proxy start \
+sudo -E ssm-proxy start \
   --instance-id i-xxx \
   --cidr 10.0.0.0/8 \
   --cidr 172.16.0.0/12
 
 # Find instance by tag
-sudo ssm-proxy start \
+sudo -E ssm-proxy start \
   --instance-tag Name=bastion-host \
   --cidr 10.0.0.0/16
 
 # Custom AWS profile and region
-sudo ssm-proxy start \
+sudo -E ssm-proxy start \
   --profile production \
   --region us-west-2 \
   --instance-id i-xxx \
   --cidr 10.0.0.0/8
 
 # Run as daemon (background)
-sudo ssm-proxy start \
+sudo -E ssm-proxy start \
   --instance-id i-xxx \
   --cidr 10.0.0.0/8 \
   --daemon
@@ -194,13 +166,13 @@ ssm-proxy list-instances --ssm-only
 
 ```bash
 # Stop default session
-sudo ssm-proxy stop
+sudo -E ssm-proxy stop
 
 # Stop specific session
-sudo ssm-proxy stop --session-name my-session
+sudo -E ssm-proxy stop --session-name my-session
 
 # Stop all sessions
-sudo ssm-proxy stop --all
+sudo -E ssm-proxy stop --all
 ```
 
 ### Test Connectivity
@@ -259,10 +231,10 @@ profiles:
 
 ```bash
 # Start using named profile
-sudo ssm-proxy start --profile-name prod
+sudo -E ssm-proxy start --profile-name prod
 
 # Override profile settings
-sudo ssm-proxy start --profile-name prod --cidr 10.0.0.0/16
+sudo -E ssm-proxy start --profile-name prod --cidr 10.0.0.0/16
 ```
 
 ## 🔧 EC2 Instance Setup
@@ -344,7 +316,7 @@ Target Resources (RDS, Redis, etc.)
 
 ```bash
 # Solution: Run with sudo
-sudo ssm-proxy start --instance-id i-xxx --cidr 10.0.0.0/8
+sudo -E ssm-proxy start --instance-id i-xxx --cidr 10.0.0.0/8
 ```
 
 ### "SSM Agent not connected"
@@ -372,16 +344,16 @@ sudo systemctl status amazon-ssm-agent
 ssm-proxy status
 
 # Clean up stale routes
-sudo ssm-proxy routes cleanup
+sudo -E ssm-proxy routes cleanup
 
 # Or stop conflicting session
-sudo ssm-proxy stop --all
+sudo -E ssm-proxy stop --all
 ```
 
 ### Enable Debug Logging
 
 ```bash
-sudo ssm-proxy start --debug --instance-id i-xxx --cidr 10.0.0.0/8
+sudo -E ssm-proxy start --debug --instance-id i-xxx --cidr 10.0.0.0/8
 ```
 
 ### Check Routes
@@ -399,7 +371,7 @@ route get 10.0.1.5
 ### Database Access
 
 ```bash
-sudo ssm-proxy start --instance-id i-xxx --cidr 10.0.0.0/16
+sudo -E ssm-proxy start --instance-id i-xxx --cidr 10.0.0.0/16
 
 # PostgreSQL
 psql -h mydb.abc.us-east-1.rds.amazonaws.com -p 5432 -U admin myapp
@@ -411,7 +383,7 @@ mysql -h mydb.abc.us-east-1.rds.amazonaws.com -P 3306 -u admin -p
 ### Redis/ElastiCache
 
 ```bash
-sudo ssm-proxy start --instance-id i-xxx --cidr 10.0.0.0/8
+sudo -E ssm-proxy start --instance-id i-xxx --cidr 10.0.0.0/8
 
 redis-cli -h master.abc.cache.amazonaws.com -p 6379
 ```
@@ -420,7 +392,7 @@ redis-cli -h master.abc.cache.amazonaws.com -p 6379
 
 ```bash
 # Route entire VPC CIDR
-sudo ssm-proxy start --instance-id i-xxx --cidr 10.0.0.0/8
+sudo -E ssm-proxy start --instance-id i-xxx --cidr 10.0.0.0/8
 
 # Now all services work transparently
 psql -h 10.0.1.5 -p 5432 db1
@@ -433,7 +405,7 @@ ssh ec2-user@10.0.4.50
 
 ```bash
 # Morning: Start proxy as daemon
-sudo ssm-proxy start \
+sudo -E ssm-proxy start \
   --instance-tag Environment=dev \
   --cidr 10.10.0.0/16 \
   --daemon
@@ -443,7 +415,7 @@ psql -h dev-db.internal -p 5432 mydb
 curl http://dev-api.internal:8080
 
 # Evening: Stop proxy
-sudo ssm-proxy stop
+sudo -E ssm-proxy stop
 ```
 
 ## 🤝 Contributing
