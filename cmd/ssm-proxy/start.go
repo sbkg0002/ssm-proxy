@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sbkg0002/ssm-proxy/internal/aws"
+	"github.com/sbkg0002/ssm-proxy/internal/dns"
 	"github.com/sbkg0002/ssm-proxy/internal/forwarder"
 	"github.com/sbkg0002/ssm-proxy/internal/routing"
 	"github.com/sbkg0002/ssm-proxy/internal/session"
@@ -45,6 +46,10 @@ var (
 
 	// Advanced options
 	logPackets bool
+
+	// DNS configuration
+	dnsResolver string
+	dnsDomains  []string
 )
 
 var startCmd = &cobra.Command{
@@ -129,6 +134,10 @@ func init() {
 
 	// Advanced options
 	startCmd.Flags().BoolVar(&logPackets, "log-packets", false, "Log individual packets (debug only, very verbose)")
+
+	// DNS configuration
+	startCmd.Flags().StringVar(&dnsResolver, "dns-resolver", "", "DNS server accessible through tunnel (e.g., '10.0.0.2:53' or '169.254.169.253:53' for AWS VPC DNS)")
+	startCmd.Flags().StringSliceVar(&dnsDomains, "dns-domains", []string{}, "Domain suffixes to resolve through tunnel (e.g., '.internal.company.com,.amazonaws.com'). If empty, all DNS queries routed through tunnel")
 
 	// Bind to viper for config file support
 	viper.BindPFlag("defaults.local_ip", startCmd.Flags().Lookup("local-ip"))
@@ -264,10 +273,45 @@ func runStart(cmd *cobra.Command, args []string) error {
 		router.Cleanup()
 	}()
 
-	// Step 6: Start TUN-to-SOCKS translator
+	// Step 6: Configure DNS resolver if specified
+	var dnsConfig *dns.Config
+	var macOSResolver *dns.MacOSResolverConfig
+	if dnsResolver != "" {
+		dnsConfig = &dns.Config{
+			Resolver: dnsResolver,
+			Domains:  dnsDomains,
+		}
+		fmt.Printf("✓ DNS resolver configured: %s\n", dnsResolver)
+		if len(dnsDomains) > 0 {
+			fmt.Printf("  └─ Domains: %v\n", dnsDomains)
+
+			// Set up macOS DNS resolver configuration
+			fmt.Println("✓ Configuring macOS DNS resolver...")
+			macOSResolver = dns.NewMacOSResolverConfig(dnsDomains, dnsResolver)
+			if err := macOSResolver.Setup(); err != nil {
+				log.Warnf("Failed to configure macOS DNS resolver: %v", err)
+				fmt.Printf("  ⚠️  Could not configure macOS DNS resolver automatically: %v\n", err)
+				fmt.Printf("     Continuing without automatic DNS configuration...\n")
+			}
+		} else {
+			fmt.Printf("  └─ All DNS queries will be routed through tunnel\n")
+			fmt.Printf("  ⚠️  Note: No specific domains configured, skipping macOS DNS resolver setup\n")
+		}
+	}
+
+	// Ensure macOS DNS resolver is cleaned up on exit
+	if macOSResolver != nil {
+		defer func() {
+			if err := macOSResolver.Cleanup(); err != nil {
+				log.Warnf("Failed to cleanup macOS DNS resolver: %v", err)
+			}
+		}()
+	}
+
+	// Step 7: Start TUN-to-SOCKS translator
 	fmt.Println("✓ Starting transparent packet forwarder...")
 
-	tunToSocks, err := forwarder.NewTunToSOCKS(tun, sshTunnel.SOCKSAddr())
+	tunToSocks, err := forwarder.NewTunToSOCKS(tun, sshTunnel.SOCKSAddr(), dnsConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create TUN-to-SOCKS translator: %w", err)
 	}
@@ -279,7 +323,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("  └─ Transparent forwarding active ✓\n")
 
-	// Step 7: Save session state
+	// Step 8: Save session state
 	sessionMgr := session.NewManager()
 	sess := &session.Session{
 		Name:       sessionName,
@@ -297,9 +341,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	defer sessionMgr.Remove(sessionName)
 
 	// Print success banner
-	printSuccessBanner(tun.Name(), cidrBlocks)
+	printSuccessBanner(tun.Name(), cidrBlocks, dnsResolver, dnsDomains)
 
-	// Step 8: Wait for interrupt signal
+	// Step 9: Wait for interrupt signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
@@ -339,7 +383,7 @@ func printStartBanner() {
 	fmt.Println()
 }
 
-func printSuccessBanner(tunDevice string, cidrs []string) {
+func printSuccessBanner(tunDevice string, cidrs []string, dnsResolver string, dnsDomains []string) {
 	fmt.Println()
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("🚀 Transparent proxy is now active!")
@@ -351,9 +395,29 @@ func printSuccessBanner(tunDevice string, cidrs []string) {
 		fmt.Printf("  • %s\n", cidr)
 	}
 	fmt.Println()
+
+	// Show DNS configuration if enabled
+	if dnsResolver != "" {
+		fmt.Println("DNS Resolution:")
+		fmt.Printf("  • DNS Server: %s\n", dnsResolver)
+		if len(dnsDomains) > 0 {
+			fmt.Printf("  • Domains: %v\n", dnsDomains)
+		} else {
+			fmt.Printf("  • All DNS queries routed through tunnel\n")
+		}
+		fmt.Println()
+	}
+
 	fmt.Println("Your applications require NO configuration.")
 	fmt.Println("Just connect normally:")
 	fmt.Println()
+
+	if dnsResolver != "" {
+		fmt.Println("  # Database (using DNS name)")
+		fmt.Println("  psql -h mydb.internal.company.com -p 5432 mydb")
+		fmt.Println()
+	}
+
 	fmt.Println("  # Database")
 	fmt.Println("  psql -h 10.0.1.5 -p 5432 mydb")
 	fmt.Println()

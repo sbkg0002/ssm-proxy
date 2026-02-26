@@ -7,9 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- DNS resolution through SSM tunnel
+  - `--dns-resolver` flag to specify DNS server accessible through tunnel
+  - `--dns-domains` flag to filter which domains to resolve through tunnel
+  - Support for AWS VPC DNS resolver (169.254.169.253:53)
+  - Support for custom internal DNS servers
+  - Split-horizon DNS support (resolve only specific domains through tunnel)
+  - DNS response caching (60 second TTL) for improved performance
+  - UDP DNS packet handling in TUN-to-SOCKS translator
+  - Automatic domain pattern matching with suffix support
+  - **Automatic macOS DNS resolver configuration** (`/etc/resolver/` management)
+  - Automatic backup and restore of existing resolver files
+  - Automatic DNS cache flushing on start and stop
+  - Clean automatic cleanup on exit (Ctrl+C)
+  - Comprehensive DNS resolver documentation (DNS_RESOLVER.md)
+  - Automatic DNS setup guide (AUTOMATIC_DNS_SETUP.md)
+
+### Changed
+
+- Updated `NewTunToSOCKS` to accept optional DNS configuration
+- Enhanced packet handling to support UDP protocol (DNS queries)
+- Updated README with DNS resolution examples and use cases
+- Improved success banner to display DNS configuration
+- Integrated automatic macOS resolver setup into start command
+- DNS resolver now automatically configures macOS system DNS (no manual steps!)
+
 ## [0.1.0] - 2024-01-15
 
 ### Added
+
 - Initial release of SSM Proxy CLI
 - Transparent system-level routing for macOS (darwin/amd64 and darwin/arm64)
 - Virtual network interface (utun) creation and management
@@ -34,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Debug and verbose logging modes
 
 ### Features
+
 - Works with any application (databases, APIs, Redis, etc.)
 - No application configuration needed
 - Support for EC2 instance selection by ID or tag
@@ -43,12 +72,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Route verification and cleanup utilities
 
 ### Requirements
+
 - macOS 11.0 (Big Sur) or later
 - Go 1.21+ (for building from source)
 - AWS credentials configured
 - EC2 instance with SSM Agent and proper IAM role
 
 ### Known Limitations
+
 - macOS only (Linux and Windows support planned)
 - SSM WebSocket implementation is a placeholder (needs completion for production use)
 - No DNS proxy/resolution through tunnel yet
@@ -56,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Session recovery after crashes needs improvement
 
 ### Technical
+
 - Built with Go 1.21+
 - Uses AWS SDK for Go v2
 - Cobra for CLI framework
@@ -65,6 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.0.1] - 2024-01-01
 
 ### Added
+
 - Project initialization
 - Basic project structure
 - Specification document

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sbkg0002/ssm-proxy/internal/dns"
 	"github.com/sbkg0002/ssm-proxy/internal/tunnel"
 	"golang.org/x/net/proxy"
 )
@@ -37,6 +38,7 @@ type TunToSOCKS struct {
 	stopCh      chan struct{}
 	wg          sync.WaitGroup
 	stats       *Stats
+	dnsResolver *dns.Resolver
 }
 
 // connKey uniquely identifies a TCP connection
@@ -60,21 +62,34 @@ type tcpConn struct {
 }
 
 // NewTunToSOCKS creates a new TUN-to-SOCKS translator
-func NewTunToSOCKS(tun *tunnel.TunDevice, socksAddr string) (*TunToSOCKS, error) {
+func NewTunToSOCKS(tun *tunnel.TunDevice, socksAddr string, dnsConfig *dns.Config) (*TunToSOCKS, error) {
 	// Create SOCKS5 dialer
 	dialer, err := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SOCKS5 dialer: %w", err)
 	}
 
-	return &TunToSOCKS{
+	t := &TunToSOCKS{
 		tun:         tun,
 		socksAddr:   socksAddr,
 		socksDialer: dialer,
 		connections: make(map[connKey]*tcpConn),
 		stopCh:      make(chan struct{}),
 		stats:       &Stats{},
-	}, nil
+	}
+
+	// Initialize DNS resolver if config provided
+	if dnsConfig != nil {
+		dnsConfig.SOCKSDialer = dialer
+		resolver, err := dns.NewResolver(*dnsConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create DNS resolver: %w", err)
+		}
+		t.dnsResolver = resolver
+		log.Infof("DNS resolver initialized for domains: %v, using server: %s", dnsConfig.Domains, dnsConfig.Resolver)
+	}
+
+	return t, nil
 }
 
 // Start starts the TUN-to-SOCKS translator
@@ -95,6 +110,11 @@ func (t *TunToSOCKS) Start(ctx context.Context) error {
 func (t *TunToSOCKS) Stop() error {
 	log.Info("Stopping TUN-to-SOCKS translator")
 	close(t.stopCh)
+
+	// Stop DNS resolver if configured
+	if t.dnsResolver != nil {
+		t.dnsResolver.Stop()
+	}
 
 	// Close all connections
 	t.connMu.Lock()
@@ -184,7 +204,14 @@ func (t *TunToSOCKS) handlePacket(ctx context.Context, packet []byte) error {
 	}
 
 	protocol := packet[9]
-	if protocol != 6 { // Only TCP
+
+	// Handle UDP (for DNS)
+	if protocol == 17 {
+		return t.HandleUDPPacket(ctx, packet, ihl)
+	}
+
+	// Handle TCP only
+	if protocol != 6 {
 		return nil
 	}
 
