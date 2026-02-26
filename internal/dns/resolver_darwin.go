@@ -143,11 +143,6 @@ func (m *MacOSResolverConfig) Cleanup() error {
 }
 
 // extractBaseDomain extracts the base domain from a pattern
-// Examples:
-//
-//	.aws.devolksbank.net -> aws.devolksbank.net
-//	aws.devolksbank.net -> aws.devolksbank.net
-//	.internal.company.com -> internal.company.com
 func extractBaseDomain(pattern string) string {
 	domain := strings.TrimSpace(pattern)
 	domain = strings.TrimPrefix(domain, ".")

@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Support for custom internal DNS servers
   - Split-horizon DNS support (resolve only specific domains through tunnel)
   - DNS response caching (60 second TTL) for improved performance
-  - UDP DNS packet handling in TUN-to-SOCKS translator
+  - UDP DNS packet capture with transparent TCP conversion for tunnel transport
+  - TCP DNS through SOCKS5 tunnel (better compatibility than UDP)
   - Automatic domain pattern matching with suffix support
   - **Automatic macOS DNS resolver configuration** (`/etc/resolver/` management)
   - Automatic backup and restore of existing resolver files
@@ -28,7 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Updated `NewTunToSOCKS` to accept optional DNS configuration
-- Enhanced packet handling to support UDP protocol (DNS queries)
+- Enhanced packet handling to support UDP DNS capture with TCP tunnel transport
+- Implemented UDP-to-TCP DNS conversion for better SOCKS5 compatibility
 - Updated README with DNS resolution examples and use cases
 - Improved success banner to display DNS configuration
 - Integrated automatic macOS resolver setup into start command
@@ -82,7 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - macOS only (Linux and Windows support planned)
 - SSM WebSocket implementation is a placeholder (needs completion for production use)
-- No DNS proxy/resolution through tunnel yet
+- DNS uses TCP through tunnel (UDP to SOCKS5 conversion complex)
 - No automatic routing table updates (requires manual route addition)
 - Session recovery after crashes needs improvement
 

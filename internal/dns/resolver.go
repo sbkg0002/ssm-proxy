@@ -23,6 +23,7 @@ type Config struct {
 
 	// Resolver is the DNS server address to use through the tunnel
 	// e.g., "10.0.0.2:53" or "169.254.169.253:53" (AWS VPC DNS)
+	// Note: DNS queries are sent via TCP for better SOCKS5 compatibility
 	Resolver string
 
 	// Timeout for DNS queries
@@ -99,7 +100,8 @@ func (r *Resolver) ShouldHandle(domain string) bool {
 	return false
 }
 
-// Query performs a DNS query through the tunnel
+// Query performs a DNS query through the tunnel using TCP
+// TCP is used instead of UDP for better SOCKS5 compatibility
 func (r *Resolver) Query(ctx context.Context, queryData []byte) ([]byte, error) {
 	// Check cache first
 	cacheKey := string(queryData)
@@ -108,7 +110,8 @@ func (r *Resolver) Query(ctx context.Context, queryData []byte) ([]byte, error) 
 		return cached, nil
 	}
 
-	// Create connection through SOCKS5 proxy (if available) or direct
+	// Create TCP connection through SOCKS5 proxy (if available) or direct
+	// TCP is used for DNS to ensure compatibility with SOCKS5 proxies
 	var conn net.Conn
 	var err error
 
@@ -119,15 +122,15 @@ func (r *Resolver) Query(ctx context.Context, queryData []byte) ([]byte, error) 
 		}); ok {
 			dialCtx, cancel := context.WithTimeout(ctx, r.config.Timeout)
 			defer cancel()
-			conn, err = dialer.DialContext(dialCtx, "udp", r.config.Resolver)
+			conn, err = dialer.DialContext(dialCtx, "tcp", r.config.Resolver)
 		} else {
 			// Fallback to regular Dial
-			conn, err = r.config.SOCKSDialer.Dial("udp", r.config.Resolver)
+			conn, err = r.config.SOCKSDialer.Dial("tcp", r.config.Resolver)
 		}
 	} else {
 		// Direct connection (no SOCKS5)
 		dialer := &net.Dialer{Timeout: r.config.Timeout}
-		conn, err = dialer.DialContext(ctx, "udp", r.config.Resolver)
+		conn, err = dialer.DialContext(ctx, "tcp", r.config.Resolver)
 	}
 
 	if err != nil {
@@ -142,14 +145,28 @@ func (r *Resolver) Query(ctx context.Context, queryData []byte) ([]byte, error) 
 	}
 	conn.SetDeadline(deadline)
 
-	// Send DNS query
-	_, err = conn.Write(queryData)
+	// Send DNS query with TCP length prefix (2 bytes)
+	// TCP DNS queries are prefixed with a 2-byte length field
+	queryLen := uint16(len(queryData))
+	tcpQuery := make([]byte, 2+len(queryData))
+	tcpQuery[0] = byte(queryLen >> 8)
+	tcpQuery[1] = byte(queryLen)
+	copy(tcpQuery[2:], queryData)
+
+	_, err = conn.Write(tcpQuery)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send DNS query: %w", err)
 	}
 
-	// Read response
-	response := make([]byte, 512) // Standard DNS response size
+	// Read TCP DNS response (first 2 bytes are length)
+	lengthBuf := make([]byte, 2)
+	_, err = conn.Read(lengthBuf)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read DNS response length: %w", err)
+	}
+
+	responseLen := int(lengthBuf[0])<<8 | int(lengthBuf[1])
+	response := make([]byte, responseLen)
 	n, err := conn.Read(response)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read DNS response: %w", err)

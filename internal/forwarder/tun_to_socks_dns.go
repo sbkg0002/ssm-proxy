@@ -18,6 +18,8 @@ type udpConnKey struct {
 }
 
 // HandleUDPPacket processes UDP packets (primarily for DNS)
+// Note: UDP DNS queries are captured here but forwarded via TCP through the tunnel
+// for better SOCKS5 compatibility. This allows standard UDP DNS to work with SOCKS5 proxies.
 func (t *TunToSOCKS) HandleUDPPacket(ctx context.Context, packet []byte, ihl int) error {
 	if len(packet) < ihl+8 {
 		return fmt.Errorf("packet too short for UDP")
@@ -51,6 +53,9 @@ func (t *TunToSOCKS) HandleUDPPacket(ctx context.Context, packet []byte, ihl int
 }
 
 // handleDNSQuery processes a DNS query packet
+// This function receives UDP DNS queries from applications and forwards them
+// via TCP through the SOCKS5 tunnel (TCP DNS is more reliable through SOCKS5).
+// The response is then converted back to UDP and sent to the application.
 func (t *TunToSOCKS) handleDNSQuery(ctx context.Context, originalPacket []byte,
 	srcIP, dstIP uint32, srcPort, dstPort uint16, queryData []byte) error {
 
@@ -73,9 +78,9 @@ func (t *TunToSOCKS) handleDNSQuery(ctx context.Context, originalPacket []byte,
 		return nil
 	}
 
-	log.Debugf("DNS: resolving %s through tunnel", domain)
+	log.Debugf("DNS: resolving %s through tunnel (via TCP)", domain)
 
-	// Perform DNS query through tunnel
+	// Perform DNS query through tunnel using TCP (converted from UDP)
 	responseData, err := t.dnsResolver.Query(ctx, queryData)
 	if err != nil {
 		log.Debugf("DNS: query failed for %s: %v", domain, err)
