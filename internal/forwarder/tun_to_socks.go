@@ -54,8 +54,9 @@ type tcpConn struct {
 	key         connKey
 	socksConn   net.Conn
 	lastActive  time.Time
-	seqNum      uint32
-	ackNum      uint32
+	seqNum      uint32 // client's sequence number (last seen)
+	ackNum      uint32 // next expected byte from client
+	serverSeq   uint32 // server's outgoing sequence number
 	established bool
 	closing     bool
 	mu          sync.Mutex
@@ -227,7 +228,6 @@ func (t *TunToSOCKS) handlePacket(ctx context.Context, packet []byte) error {
 	srcPort := binary.BigEndian.Uint16(tcpHeader[0:2])
 	dstPort := binary.BigEndian.Uint16(tcpHeader[2:4])
 	seqNum := binary.BigEndian.Uint32(tcpHeader[4:8])
-	ackNum := binary.BigEndian.Uint32(tcpHeader[8:12])
 	dataOffset := int(tcpHeader[12]>>4) * 4
 	flags := tcpHeader[13]
 
@@ -268,7 +268,8 @@ func (t *TunToSOCKS) handlePacket(ctx context.Context, packet []byte) error {
 	conn.mu.Lock()
 	conn.lastActive = time.Now()
 	conn.seqNum = seqNum
-	conn.ackNum = ackNum
+	// ackNum in our outgoing packets = next byte we expect from client
+	conn.ackNum = seqNum + uint32(len(payload))
 	conn.mu.Unlock()
 
 	// Forward payload if present
@@ -312,6 +313,7 @@ func (t *TunToSOCKS) handleSYN(ctx context.Context, key connKey, seqNum uint32) 
 		lastActive:  time.Now(),
 		seqNum:      seqNum,
 		ackNum:      seqNum + 1,
+		serverSeq:   1, // SYN-ACK consumed seq 0
 		established: true,
 	}
 
@@ -369,17 +371,17 @@ func (t *TunToSOCKS) readFromSOCKS(conn *tcpConn) {
 
 		if n > 0 {
 			conn.mu.Lock()
+			serverSeq := conn.serverSeq
 			ackNum := conn.ackNum
-			conn.ackNum += uint32(n)
-			lastActive := time.Now()
-			conn.lastActive = lastActive
+			conn.serverSeq += uint32(n)
+			conn.lastActive = time.Now()
 			conn.mu.Unlock()
 
-			// Send data packet
+			// Send data packet: seq=our outgoing seq, ack=next expected from client
 			packet := buildTCPPacket(
 				uint32ToIP(conn.key.dstIP), conn.key.dstPort,
 				uint32ToIP(conn.key.srcIP), conn.key.srcPort,
-				ackNum, conn.seqNum,
+				serverSeq, ackNum,
 				tcpPSH|tcpACK, buf[:n],
 			)
 
