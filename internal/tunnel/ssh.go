@@ -31,6 +31,7 @@ type SSHTunnel struct {
 	stoppedCh        chan struct{}
 	sshUser          string
 	keyPair          *SSHKeyPair
+	tempKey          bool
 }
 
 // SSHTunnelConfig holds configuration for SSH tunnel
@@ -42,6 +43,7 @@ type SSHTunnelConfig struct {
 	AvailabilityZone string
 	SOCKSPort        int
 	SSHUser          string
+	TempKey          bool
 }
 
 // NewSSHTunnel creates a new SSH tunnel manager
@@ -61,6 +63,7 @@ func NewSSHTunnel(config SSHTunnelConfig) *SSHTunnel {
 		availabilityZone: config.AvailabilityZone,
 		socksPort:        config.SOCKSPort,
 		sshUser:          config.SSHUser,
+		tempKey:          config.TempKey,
 		stopCh:           make(chan struct{}),
 		stoppedCh:        make(chan struct{}),
 	}
@@ -86,15 +89,23 @@ func (t *SSHTunnel) Start(ctx context.Context) error {
 	var publicKey string
 	var err error
 
-	if existingKey, exists := CheckExistingSSHKey(); exists {
-		sshLog.Infof("Using existing SSH key: %s", existingKey)
-		privateKeyPath = existingKey
-		publicKey, err = GetSSHPublicKeyFromPrivate(existingKey)
-		if err != nil {
-			return fmt.Errorf("failed to read public key from existing key: %w", err)
+	if !t.tempKey {
+		if existingKey, exists := CheckExistingSSHKey(); exists {
+			sshLog.Infof("Using existing SSH key: %s", existingKey)
+			privateKeyPath = existingKey
+			publicKey, err = GetSSHPublicKeyFromPrivate(existingKey)
+			if err != nil {
+				return fmt.Errorf("failed to read public key from existing key: %w", err)
+			}
 		}
-	} else {
-		sshLog.Info("No existing SSH key found, generating temporary key pair")
+	}
+
+	if privateKeyPath == "" {
+		if t.tempKey {
+			sshLog.Info("Generating temporary SSH key pair (--temp-key flag set)")
+		} else {
+			sshLog.Info("No existing SSH key found, generating temporary key pair")
+		}
 		keyPair, err := GenerateTemporarySSHKey()
 		if err != nil {
 			return fmt.Errorf("failed to generate temporary SSH key: %w", err)

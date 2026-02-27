@@ -46,6 +46,7 @@ var (
 
 	// Advanced options
 	logPackets bool
+	tempKey    bool
 
 	// DNS configuration
 	dnsResolver string
@@ -134,6 +135,7 @@ func init() {
 
 	// Advanced options
 	startCmd.Flags().BoolVar(&logPackets, "log-packets", false, "Log individual packets (debug only, very verbose)")
+	startCmd.Flags().BoolVar(&tempKey, "temp-key", false, "Generate a temporary SSH key pair for this session only (ignore existing ~/.ssh keys)")
 
 	// DNS configuration
 	startCmd.Flags().StringVar(&dnsResolver, "dns-resolver", "", "DNS server accessible through tunnel (e.g., '10.0.0.2:53' or '169.254.169.253:53' for AWS VPC DNS)")
@@ -228,6 +230,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		AvailabilityZone: instance.AvailabilityZone,
 		SOCKSPort:        1080,
 		SSHUser:          "ec2-user",
+		TempKey:          tempKey,
 	})
 
 	if err := sshTunnel.Start(ctx); err != nil {
