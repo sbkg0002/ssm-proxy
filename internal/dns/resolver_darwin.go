@@ -80,7 +80,7 @@ func (m *MacOSResolverConfig) Setup() error {
 	}
 
 	// Flush DNS cache to apply changes immediately
-	if err := flushDNSCache(); err != nil {
+	if err := FlushDNSCache(); err != nil {
 		log.Warnf("Failed to flush DNS cache: %v", err)
 		log.Warn("You may need to manually flush DNS: sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder")
 	} else {
@@ -126,7 +126,7 @@ func (m *MacOSResolverConfig) Cleanup() error {
 	}
 
 	// Flush DNS cache after cleanup
-	if err := flushDNSCache(); err != nil {
+	if err := FlushDNSCache(); err != nil {
 		log.Warnf("Failed to flush DNS cache after cleanup: %v", err)
 	} else {
 		log.Debug("  ✓ DNS cache flushed")
@@ -165,8 +165,8 @@ func extractIPPort(addr string) string {
 	return addr
 }
 
-// flushDNSCache flushes the macOS DNS cache
-func flushDNSCache() error {
+// FlushDNSCache flushes the macOS DNS cache
+func FlushDNSCache() error {
 	log.Debug("Flushing macOS DNS cache...")
 
 	// Try dscacheutil (works on all modern macOS versions)

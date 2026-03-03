@@ -220,7 +220,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("  └─ SSM Status: connected ✓\n")
 
-	// Step 3: Start SSH tunnel with dynamic SOCKS5 forwarding over SSM
+	// Step 3: Flush DNS cache to prevent stale entries from interfering
+	fmt.Println("✓ Flushing DNS cache...")
+	if err := dns.FlushDNSCache(); err != nil {
+		log.Warnf("Failed to flush DNS cache: %v", err)
+	}
+
+	// Step 4: Start SSH tunnel with dynamic SOCKS5 forwarding over SSM
 	fmt.Println("✓ Starting SSH tunnel over SSM...")
 	sshTunnel := tunnel.NewSSHTunnel(tunnel.SSHTunnelConfig{
 		InstanceID:       instance.InstanceID,
